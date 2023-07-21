@@ -1,226 +1,167 @@
-import { View, Text, TextInput, SafeTextArea } from 'react-native';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect,useCallback  } from 'react';
+import { View, Text, ActivityIndicator, SafeAreaView, Button, ScrollView, StyleSheet, TextInput, KeyboardAvoidingView  } from 'react-native';
+import { Client } from '@stomp/stompjs';
+import { TextEncoder, TextDecoder } from 'text-encoding';
+global.TextEncoder = TextEncoder;
+global.TextDecoder = TextDecoder;
 
 
-var stompClient = null;
 
 const Chat = () => {
-  const [privateChats, setPrivateChats] = useState(new Map());
-  const [publicChats, setPublicChats] = useState([]);
-  const [tab, setTab] = useState('CHATROOM');
-  const [userData, setUserData] = useState({
-    username: '',
-    receivername: '',
-    connected: false,
-    message: '',
-  });
-  useEffect(() => {
-    console.log(userData);
-  }, [userData]);
-
-  const onConnected = (frame) => {
-    setUserData({ ...userData, connected: true });
-    stompClient.subscribe('/chatroom/public', onPublicMessageReceived);
-    stompClient.subscribe(
-      '/user/' + userData.username + '/private',
-      onPrivateMessageReceived
-    );
-    userJoin();
-  };
-
-  const userJoin = () => {
-    var chatMessage = {
-      senderName: userData.username,
-      status: 'JOIN',
-    };
-    stompClient.send('/app/message', {}, JSON.stringify(chatMessage));
-  };
+  const [serverState, setServerState] = useState('Loading...');
+  const [connectedToServer, setConnectedToServer] = useState(false);
+  const [username, setUsername] = useState("");
+  const [usernameSubmitted, setUsernameSubmitted] = useState(false);
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [error, setError] = useState(null);
+  const [stompClient, setStompClient] = useState(null);
 
   const onMessageReceived = (payload) => {
-    var payloadData = JSON.parse(payload.body);
-    switch (payloadData.status) {
-      case 'JOIN':
-        if (!privateChats.get(payloadData.senderName)) {
-          privateChats.set(payloadData.senderName, []);
-          setPrivateChats(new Map(privateChats));
-        }
-        break;
-      case 'MESSAGE':
-        publicChats.push(payloadData);
-        setPublicChats([...publicChats]);
-        break;
-    }
+    const message = JSON.parse(payload.body);
+    setMessages((prevMessages) => [...prevMessages, message]);
   };
 
-  const onPrivateMessage = (payload) => {
-    console.log(payload);
-    var payloadData = JSON.parse(payload.body);
-    if (privateChats.get(payloadData.senderName)) {
-      privateChats.get(payloadData.senderName).push(payloadData);
-      setPrivateChats(new Map(privateChats));
-    } else {
-      let list = [];
-      list.push(payloadData);
-      privateChats.set(payloadData.senderName, list);
-      setPrivateChats(new Map(privateChats));
-    }
-  };
+  useEffect(() => {
+    
+      const client = new Client({
+        brokerURL: 'ws://192.168.2.38:8080/ws',
+        onConnect: () => {
+          client.subscribe('/topic/public', onMessageReceived);
+          client.publish({destination: "/app/chat.addUser", body: JSON.stringify({sender: username, type: 'JOIN'})});
+          setServerState('Connected to the server');
+          setConnectedToServer(true);
+        },
+        onStompError: (error) => {
+          setError(`Could not connect to WebSocket server. Please refresh this page to try again! Detailed error: ${error.headers.message}`);
+          setServerState('Error');
+          
+        },
+        onDisconnect: () =>{setConnectedToServer(false);}
+      });
 
-  const onError = (err) => {
-    console.log(err);
-  };
+      client.activate();
+      setStompClient(client);
+    
 
-  const handleMessage = (event) => {
-    const { value } = event.target;
-    setUserData({ ...userData, message: value });
-  };
-  const sendValue = () => {
-    if (stompClient) {
-      var chatMessage = {
-        senderName: userData.username,
-        message: userData.message,
-        status: 'MESSAGE',
-      };
-      console.log(chatMessage);
-      stompClient.send('/app/message', {}, JSON.stringify(chatMessage));
-      setUserData({ ...userData, message: '' });
-    }
-  };
-
-  const sendPrivateValue = () => {
-    if (stompClient) {
-      var chatMessage = {
-        senderName: userData.username,
-        receiverName: tab,
-        message: userData.message,
-        status: 'MESSAGE',
-      };
-
-      if (userData.username !== tab) {
-        privateChats.get(tab).push(chatMessage);
-        setPrivateChats(new Map(privateChats));
+    return () => {
+      if (stompClient) {
+        stompClient.deactivate();
       }
-      stompClient.send('/app/private-message', {}, JSON.stringify(chatMessage));
-      setUserData({ ...userData, message: '' });
+    };
+  }, [usernameSubmitted]);
+
+  const sendMessage = useCallback(() => {
+    if (message.trim() && stompClient) {
+      const chatMessage = {
+        sender: username,
+        content: message,
+        type: 'CHAT'
+      };
+      try {
+        stompClient.publish({destination: "/app/chat.sendMessage", body: JSON.stringify(chatMessage)});
+        setMessage('');
+      } catch(error) {
+        setError(`Error sending message: ${error.message}`);
+      }
+    } else {
+      Alert.alert('Warning', 'Cannot send empty message.');
+    }
+  }, [message, stompClient, username]);
+  const handleSubmitUsername = useCallback(() => {
+    if (username.trim()) {
+      setUsernameSubmitted(true);
+      
+    } else {
+      Alert.alert('Warning', 'Username cannot be empty.');
+    }
+  }, [username]);
+
+ 
+
+  const handleKeyPress = (e) => {
+    if (e.nativeEvent.key === "Enter") {
+      sendMessage();
     }
   };
 
   return (
-    <View style={styles.container}>
-      {userData.connected ? (
-        <View style={styles.chatBox}>
-          <View style={styles.memberList}>
-            <TouchableOpacity
-              onPress={() => {
-                setTab('CHATROOM');
-              }}
-              style={[styles.member, tab === 'CHATROOM' && styles.active]}
-            >
-              <Text>Chatroom</Text>
-            </TouchableOpacity>
-            {[...privateChats.keys()].map((name, index) => (
-              <TouchableOpacity
-                onPress={() => {
-                  setTab(name);
-                }}
-                style={[styles.member, tab === name && styles.active]}
-                key={index}
-              >
-                <Text>{name}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          {tab === 'CHATROOM' && (
-            <View style={styles.chatContent}>
-              <View style={styles.chatMessages}>
-                {publicChats.map((chat, index) => (
-                  <View
-                    style={[
-                      styles.message,
-                      chat.senderName === userData.username && styles.self,
-                    ]}
-                    key={index}
-                  >
-                    {chat.senderName !== userData.username && (
-                      <Text style={styles.avatar}>{chat.senderName}</Text>
-                    )}
-                    <Text style={styles.messageData}>{chat.message}</Text>
-                    {chat.senderName === userData.username && (
-                      <Text style={[styles.avatar, styles.selfAvatar]}>
-                        {chat.senderName}
-                      </Text>
-                    )}
+    
+    <SafeAreaView style={{flex: 1}}>
+      <View style={{ alignItems: 'center', marginTop: 42 }}>
+        {
+          connectedToServer 
+            ? <Text style={{fontSize:42, fontWeight:'bold', marginTop:100}}>Connected!</Text>
+            : (
+              <>
+                <View style={{marginTop:200}}>
+                    <Text style={{ fontSize: 32, fontWeight: 'bold' }}>
+                    {serverState}
+                    </Text>
+                    <ActivityIndicator size={'large'} style={{ margin: 42, transform: [{ scale: 2.0 }] }} />
+                </View>
+              </>
+            )
+        }
+      </View>
+      <View style={styles.container}>
+        {usernameSubmitted 
+          ? <> 
+              <ScrollView style={styles.messageArea}>
+                {messages.map((message, index) => (
+                  <View key={index} style={styles.message}>
+                    <Text style={styles.sender}>({message.sender}): </Text>
+                    <Text style={styles.content}>{message.content}</Text>
                   </View>
                 ))}
-              </View>
-              <View style={styles.sendMessage}>
-                <TextInput
-                  style={styles.inputMessage}
-                  placeholder="enter the message"
-                  value={userData.message}
-                  onChangeText={handleMessage}
-                />
-                <TouchableOpacity style={styles.sendButton} onPress={sendValue}>
-                  <Text>send</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-          {tab !== 'CHATROOM' && (
-            <View style={styles.chatContent}>
-              <View style={styles.chatMessages}>
-                {[...privateChats.get(tab)].map((chat, index) => (
-                  <View
-                    style={[
-                      styles.message,
-                      chat.senderName === userData.username && styles.self,
-                    ]}
-                    key={index}
-                  >
-                    {chat.senderName !== userData.username && (
-                      <Text style={styles.avatar}>{chat.senderName}</Text>
-                    )}
-                    <Text style={styles.messageData}>{chat.message}</Text>
-                    {chat.senderName === userData.username && (
-                      <Text style={[styles.avatar, styles.selfAvatar]}>
-                        {chat.senderName}
-                      </Text>
-                    )}
-                  </View>
-                ))}
-              </View>
-              <View style={styles.sendMessage}>
-                <TextInput
-                  style={styles.inputMessage}
-                  placeholder="enter the message"
-                  value={userData.message}
-                  onChangeText={handleMessage}
-                />
-                <TouchableOpacity
-                  style={styles.sendButton}
-                  onPress={sendPrivateValue}
-                >
-                  <Text>send</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </View>
-      ) : (
-        <View style={styles.register}>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter your name"
-            value={userData.username}
-            onChangeText={handleUsername}
-          />
-          <TouchableOpacity style={styles.connectButton} onPress={registerUser}>
-            <Text>connect</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-    </View>
+              </ScrollView>
+              <TextInput 
+                placeholder="Message"
+                value={message}
+                onChangeText={setMessage}
+                onKeyPress={handleKeyPress}
+                style={styles.input} 
+              />
+              <View><Button title="Send" onPress={sendMessage} /></View>
+            </>
+          : (connectedToServer && <>
+            <TextInput placeholder="Username" value={username} onChangeText={setUsername} style={styles.input} />
+            <Button title="Submit Username" onPress={handleSubmitUsername} />
+          </>)
+        }
+        {error && <Text style={styles.error}>{error}</Text>}
+      </View>
+    </SafeAreaView>
   );
 };
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 16,
+  },
+  messageArea: {
+    flex: 1,
+  },
+  message: {
+    flexDirection: 'row',
+    marginVertical: 4,
+  },
+  sender: {
+    fontWeight: 'bold',
+    marginRight: 10,
+  },
+  content: {},
+  input: {
+    height: 40,
+    borderColor: 'gray',
+    borderWidth: 1,
+    marginVertical: 16,
+  },
+  error: {
+    color: 'red',
+  },
+});
 
 export default Chat;
